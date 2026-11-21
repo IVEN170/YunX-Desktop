@@ -24,6 +24,11 @@ on:
         default: arm64
         type: choice
         options: [arm64, x64]
+      skip_tests:
+        description: '跳過單元測試（只驗編譯／打包）'
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main, ci/macos-workflow]
   pull_request:
@@ -273,7 +278,13 @@ jobs:
 
       - name: Build
         if: steps.detect.outputs.has == 'true'
-        run: ${{ steps.detect.outputs.gradle_cmd }} build --no-daemon --stacktrace
+        run: |
+          args=""
+          if [ "${{ inputs.skip_tests }}" = "true" ]; then
+            args="-x test"
+            echo "skip_tests=true → building without tests"
+          fi
+          ${{ steps.detect.outputs.gradle_cmd }} build --no-daemon --stacktrace $args
 
       - name: Package (dmg / dist)
         if: steps.detect.outputs.has == 'true'
