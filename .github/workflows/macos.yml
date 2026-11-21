@@ -347,6 +347,44 @@ jobs:
           hdiutil detach "$vol"
           echo "DMG VERIFIED"
 
+      # 真的把它跑起來：掛載 dmg → open → 等 25 秒 → 看進程還在不在 + 截圖。
+      # 只證明「能啟動」，UI 內容看截圖。continue-on-error：啟動失敗不擋打包產物，
+      # 但日誌會寫清楚是「進程不在」還是「崩潰報告」。
+      - name: Launch the app (smoke test + screenshot)
+        if: steps.detect.outputs.has == 'true'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          dmg=$(find . -path '*/build/compose/binaries/main/dmg/*.dmg' -print -quit)
+          hdiutil attach "$dmg" -nobrowse -readonly > /tmp/attach2.txt
+          vol=$(awk '/\/Volumes\// {print $NF}' /tmp/attach2.txt | head -1)
+          app=$(find "$vol" -maxdepth 1 -name '*.app' -print -quit)
+          echo "launching $app"
+          open "$app" || echo "open failed"
+          sleep 25
+          echo "=== 進程 ==="
+          pgrep -fl "YunX" || echo "NO YunX PROCESS"
+          echo "=== 截图 ==="
+          screencapture -x /tmp/yunx-launch.png || echo "screencapture failed"
+          ls -la /tmp/yunx-launch.png || true
+          echo "=== 崩溃报告（如有）==="
+          ls -lt ~/Library/Logs/DiagnosticReports 2>/dev/null | head -10 || echo "(none)"
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/*.ips 2>/dev/null | head -1); do
+            echo "--- $f ---"; head -c 1500 "$f"; echo
+          done
+          hdiutil detach "$vol" || true
+
+      - name: Upload launch screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-launch-shot-${{ github.run_id }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            /tmp/yunx-launch.png
+            ~/Library/Logs/DiagnosticReports/*.ips
+
       - name: Collect artifacts
         if: always()
         uses: actions/upload-artifact@v4
