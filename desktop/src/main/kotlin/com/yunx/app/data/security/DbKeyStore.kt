@@ -217,11 +217,30 @@ object DbKeyStore {
         )
     }
 
-    /** Windows MachineGuid（HKLM\SOFTWARE\Microsoft\Cryptography），普通用户可读 */
+    /**
+     * 机器标识（只求「开机即稳定 + 机器唯一」，与账号改名无关）：
+     * - Windows：MachineGuid（HKLM\SOFTWARE\Microsoft\Cryptography），普通用户可读；
+     * - macOS：IOPlatformUUID（ioreg -rd1 -c IOPlatformExpertDevice），作用与 MachineGuid 相同；
+     * - 其它平台：暂不可用（返回 null → MachineFingerprintUnavailable，调用方不会据此更换密钥）。
+     */
     private fun machineGuid(): String? = runCatching {
-        Advapi32Util.registryGetStringValue(
-            WinReg.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Cryptography", "MachineGuid"
-        ).takeIf { it.isNotBlank() }
+        when {
+            isWindows() -> Advapi32Util.registryGetStringValue(
+                WinReg.HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Cryptography", "MachineGuid"
+            )
+            isMac() -> readMacPlatformUuid()
+            else -> null
+        }
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+
+    /** macOS 硬件 UUID：ioreg 输出形如 `"IOPlatformUUID" = "0A1B…"` */
+    private fun readMacPlatformUuid(): String? = runCatching {
+        val proc = ProcessBuilder("ioreg", "-rd1", "-c", "IOPlatformExpertDevice")
+            .redirectErrorStream(true)
+            .start()
+        val output = proc.inputStream.bufferedReader().use { it.readText() }
+        proc.waitFor()
+        Regex("\"IOPlatformUUID\"\\s*=\\s*\"([^\"]+)\"").find(output)?.groupValues?.get(1)?.trim()
     }.getOrNull()
 
     /** 较为严格档：Windows DPAPI（CryptProtectData，绑定当前登录用户） */
@@ -239,4 +258,7 @@ object DbKeyStore {
 
     private fun isWindows(): Boolean =
         System.getProperty("os.name").orEmpty().lowercase().contains("win")
+
+    private fun isMac(): Boolean =
+        System.getProperty("os.name").orEmpty().lowercase().contains("mac")
 }
