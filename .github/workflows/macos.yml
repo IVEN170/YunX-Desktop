@@ -294,6 +294,53 @@ jobs:
           ${{ steps.detect.outputs.gradle_cmd }} packageDistributionForCurrentOS --no-daemon || \
           ${{ steps.detect.outputs.gradle_cmd }} assemble --no-daemon
 
+      # 产物自证：真的挂载 dmg、读 Info.plist、确认 mac 原生库与图标在包里
+      - name: Verify dmg (mount + bundle contents)
+        if: steps.detect.outputs.has == 'true'
+        run: |
+          set -euo pipefail
+          dmg=$(find . -path '*/build/compose/binaries/main/dmg/*.dmg' -print -quit)
+          if [ -z "$dmg" ]; then echo "::error::no .dmg was produced"; exit 1; fi
+          echo "dmg: $dmg"
+          echo "size: $(stat -f%z "$dmg") bytes"
+          echo "sha256: $(shasum -a 256 "$dmg" | awk '{print $1}')"
+
+          hdiutil attach "$dmg" -nobrowse -readonly > /tmp/attach.txt
+          cat /tmp/attach.txt
+          vol=$(awk '/\/Volumes\// {print $NF}' /tmp/attach.txt | head -1)
+          echo "mounted at: $vol"
+          ls -la "$vol"
+
+          app=$(find "$vol" -maxdepth 1 -name '*.app' -print -quit)
+          echo "app bundle: $app"
+          test -n "$app"
+
+          echo "=== Info.plist ==="
+          plutil -p "$app/Contents/Info.plist" | grep -E 'CFBundleIdentifier|CFBundleExecutable|CFBundleName|CFBundleShortVersionString|CFBundleIconFile|LSMinimumSystemVersion'
+          plutil -p "$app/Contents/Info.plist" | grep -q 'com.yunx.app.desktop' \
+            || { echo "::error::bundle id is not com.yunx.app.desktop"; exit 1; }
+          echo "BUNDLE ID OK"
+
+          echo "=== 可执行文件 ==="
+          file "$app/Contents/MacOS/"*
+          echo "=== app 内 jar（前 40）==="
+          ls -1 "$app/Contents/app" | head -40
+
+          echo "=== mac 原生库自检 ==="
+          sqlite_jar=$(for j in "$app"/Contents/app/*.jar; do unzip -l "$j" 2>/dev/null | grep -q 'native/Mac/' && basename "$j"; done | head -1)
+          jfx_jar=$(for j in "$app"/Contents/app/javafx-*.jar; do unzip -l "$j" 2>/dev/null | grep -q '\.dylib$' && basename "$j"; done | head -1)
+          echo "sqlite mac native 在: ${sqlite_jar:-<none>}"
+          echo "javafx mac dylib 在: ${jfx_jar:-<none>}"
+          [ -n "$sqlite_jar" ] || { echo "::error::sqlite mac native missing"; exit 1; }
+          [ -n "$jfx_jar" ] || { echo "::error::javafx mac dylib missing"; exit 1; }
+
+          echo "=== 图标 ==="
+          ls -la "$app/Contents/Resources" | head -20
+          shasum -a 256 "$app/Contents/Resources/"*.icns 2>/dev/null || echo "(no .icns in Resources)"
+
+          hdiutil detach "$vol"
+          echo "DMG VERIFIED"
+
       - name: Collect artifacts
         if: always()
         uses: actions/upload-artifact@v4
