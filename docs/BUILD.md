@@ -70,6 +70,31 @@ Beta=0           ← 第二行：Beta=1 预览版 / Beta=0 正式版（缺省 = 
 
 便携包约 230MB（其中运行期 JRE 约 40MB、CEF 原生库压缩包约 110MB），体积主要来自 Chromium。
 
+## macOS 打包（DMG）
+
+`desktop/build.gradle.kts` 现在按平台挑依赖与打包格式，同一份脚本两边都能跑：
+
+```bash
+# macOS 上（需要 JDK 17；GitHub 的 macos-26 runner 自带）
+gradle :desktop:packageDmg        # → desktop/build/compose/binaries/main/dmg/YunX-Desktop-<版本>.dmg
+gradle :desktop:createDistributable  # 只出 .app（不压 dmg，快一点，便于看结构）
+```
+
+- **仅当前平台的格式会被构建**：Windows 出 `.exe`（`packageExe`），macOS 出 `.dmg`（`packageDmg`），
+  另一边的任务会被 Compose 跳过，所以 `targetFormats(TargetFormat.Exe, TargetFormat.Dmg)` 可以并存。
+- **原生库按平台选**：JavaFX 用 `win` / `mac` / `mac-aarch64` classifier；`sqlite-jdbc` 在 Windows 用
+  `libs/sqlite-jdbc-3.47.1.0-win.jar`（只有 Windows 原生库），其他平台改用官方 `org.xerial:sqlite-jdbc`
+  全量包；JCEF 原生包换 `jcef-natives-macosx-arm64` / `-amd64`。
+- **图标**：`YunX-Desktop.icns` 由根目录的 `YunX-Desktop.ico` 生成，脚本在
+  `desktop/scripts/make_icns.py`（只需 Pillow，任何平台都能跑；改图标后重新生成并提交）。
+- **未签名**：CI 出的 dmg 没有 Apple Developer 证书，首次打开要「右键 → 打开」，或
+  `xattr -dr com.apple.quarantine /Applications/YunX-Desktop.app`。要正式分发得配
+  `macOS { packageSigning { sign.set(true); signingKeyChain = "..." } }` + 公证。
+- **Windows 专属功能在 macOS 上不可用**：内嵌 JCEF 浏览器的原生库打包器（`JcefNativesPacker`，
+  由 `portable-package.ps1` 调用）、托盘暗色菜单的 `darkmode.cpp`（`compileDarkMode` 已在非 Windows
+  自动跳过）、`picker` 遮罩选位器 EXE、DPAPI Cookie 解密。macOS 版能启动、能登录、能下载，
+  但这几块要另做（macOS 的 Keychain / 原生 NSMenu / CGWindow 选位）。
+
 ## 发布包体积裁剪
 
 打包脚本只改**发布包里的文件**，不改变编译期依赖，也不改变任何功能：

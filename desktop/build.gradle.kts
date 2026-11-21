@@ -6,6 +6,22 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// ---- 平台探测 ----
+// 同一份脚本要能在 Windows（EXE 安装包）和 macOS（DMG）上跑：JavaFX、SQLite、JCEF 的
+// 原生库都是「一个平台一份」，必须按当前平台挑 classifier，否则打出来的包一启动就
+// UnsatisfiedLinkError。
+val osName = System.getProperty("os.name").lowercase()
+val osArch = System.getProperty("os.arch").lowercase()
+val isWindows = osName.startsWith("windows")
+val isMac = osName.startsWith("mac")
+val isArm64 = osArch in setOf("aarch64", "arm64")
+val javafxClassifier = when {
+    isWindows -> "win"
+    isMac -> if (isArm64) "mac-aarch64" else "mac"
+    else -> if (isArm64) "linux-aarch64" else "linux"
+}
+val jcefNativesVersion = "jcef-1770317+cef-132.3.1+g144febe+chromium-132.0.6834.83"
+
 dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
@@ -26,21 +42,26 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
 
     // Room -> 纯 JDBC SQLite
-    // ★ 用裁剪后的本地 jar：官方包 13.6 MB，含六个平台的原生库，本项目只跑 Windows。
-    //   只保留 org/sqlite/native/Windows（x86/x86_64/arm/arm64），其余代码与 META-INF 原样保留。
-    implementation(files("libs/sqlite-jdbc-3.47.1.0-win.jar"))
+    // ★ Windows 用裁剪后的本地 jar：官方包 13.6 MB，含六个平台的原生库，Windows 包只留
+    //   org/sqlite/native/Windows（x86/x86_64/arm/arm64）。裁剪包在别的平台上没有原生库，
+    //   所以 macOS / Linux 走官方全量包（DMG 里的 sqlite 才加载得起来）。
+    if (isWindows) {
+        implementation(files("libs/sqlite-jdbc-3.47.1.0-win.jar"))
+    } else {
+        implementation("org.xerial:sqlite-jdbc:3.47.1.0")
+    }
     // Android 内置 org.json 的 JVM 等价物
     implementation("org.json:json:20240303")
     // 主题种子色（material-color-utilities 无公开仓库坐标；从 material 1.14.0 AAR 解包 classes.jar 本地引入）
     implementation(files("libs/material-color-utilities-1.0.0.jar"))
 
     // JavaFX MediaView 播放器（M6）：JFXPanel 经 SwingPanel 嵌入 Compose。
-    // 版本跟随 jvmToolchain(17)；发布目标只有 Windows，直接用 :win classifier（jar 内含原生库，
-    // 首次运行由 JavaFX 自动解到用户目录缓存，jpackage 无需额外处理）
-    implementation("org.openjfx:javafx-base:17.0.13:win")
-    implementation("org.openjfx:javafx-graphics:17.0.13:win")
-    implementation("org.openjfx:javafx-media:17.0.13:win")
-    implementation("org.openjfx:javafx-swing:17.0.13:win")
+    // 版本跟随 jvmToolchain(17)；原生库按当前平台取 classifier（win / mac / mac-aarch64），
+    // 首次运行由 JavaFX 自动解到用户目录缓存，jpackage 无需额外处理
+    implementation("org.openjfx:javafx-base:17.0.13:$javafxClassifier")
+    implementation("org.openjfx:javafx-graphics:17.0.13:$javafxClassifier")
+    implementation("org.openjfx:javafx-media:17.0.13:$javafxClassifier")
+    implementation("org.openjfx:javafx-swing:17.0.13:$javafxClassifier")
 
     // GFM Markdown 渲染（README / 更新说明）。注意：必须停留在 0.33.x ——
     // 0.34.0 起改用 Compose 1.8+ 的 BasicText 签名（含 TextAutoSize），与项目锁定的
@@ -71,7 +92,15 @@ dependencies {
     //   发布包不随带这个 120MB 的 jar，改由打包脚本用 JcefNativesPacker 重打成
     //   app\jcef-natives.tar.gz（裁剪语言包），首次使用时由 JcefNativesInstaller 解开。
     //   见 portable-package.ps1 [2c/5] 与 ui/jcef/JcefNativesInstaller.kt。
-    implementation("me.friwi:jcef-natives-windows-amd64:jcef-1770317+cef-132.3.1+g144febe+chromium-132.0.6834.83")
+    //   原生包按平台取：win / mac（arm64、amd64）/ linux。
+    implementation(
+        when {
+            isWindows -> "me.friwi:jcef-natives-windows-amd64:$jcefNativesVersion"
+            isMac -> "me.friwi:jcef-natives-macosx-${if (isArm64) "arm64" else "amd64"}:$jcefNativesVersion"
+            isArm64 -> "me.friwi:jcef-natives-linux-arm64:$jcefNativesVersion"
+            else -> "me.friwi:jcef-natives-linux-amd64:$jcefNativesVersion"
+        }
+    )
 
     // tar.gz 读写：CEF 原生库发布包（打包期重打成 gzip，运行期自解包）
     // jcefmaven 已传递引入 commons-compress，这里显式声明版本以保证稳定
@@ -177,10 +206,11 @@ tasks.register<JavaExec>("testInProcess") {
 }
 
 // 编译 native/darkmode.cpp → build/native/darkmode.dll（托盘原生菜单暗色桥接层）
+// 只在 Windows 上有意义（用 MSVC/MinGW + user32），macOS 直接跳过。
 val nativeSrcDir = file("native")
 val nativeOutDir = layout.buildDirectory.dir("native").get().asFile
 val darkModeSrc = File(nativeSrcDir, "darkmode.cpp")
-val darkModeOut = File(nativeOutDir, "darkmode.dll")
+val darkModeOut = File(nativeOutDir, if (isWindows) "darkmode.dll" else "darkmode.dylib")
 
 // 定位 MSVC 的 vcvars64.bat（cl 直接调会找不到 windows.h / CRT 库，必须先 call 它）
 fun findMsvcVcvars(): File? {
@@ -203,6 +233,7 @@ fun findMsvcVcvars(): File? {
 }
 
 val compileDarkMode by tasks.registering(Exec::class) {
+    onlyIf { isWindows }
     val vcvars = findMsvcVcvars()
     inputs.file(darkModeSrc)
     outputs.file(darkModeOut)
@@ -231,14 +262,14 @@ val compileDarkMode by tasks.registering(Exec::class) {
 tasks.withType<JavaExec> {
     dependsOn(compileDarkMode)
     val jvmBin = File(System.getProperty("java.home"), "bin").absolutePath
-    systemProperty("java.library.path", "${nativeOutDir.absolutePath};$jvmBin")
+    systemProperty("java.library.path", "${nativeOutDir.absolutePath}${File.pathSeparator}$jvmBin")
 }
 
 // 收集运行时依赖 jar 路径（供便携版 app-image 打包）
 tasks.register("printRuntimeClasspath") {
     doLast {
         val cp = configurations.runtimeClasspath.get().files
-            .joinToString(";") { it.absolutePath }
+            .joinToString(File.pathSeparator) { it.absolutePath }
         println("RUNTIME_CP=$cp")
     }
 }
@@ -261,7 +292,9 @@ compose.desktop {
     application {
         mainClass = "com.yunx.app.MainKt"
         nativeDistributions {
-            targetFormats(TargetFormat.Exe)
+            // Exe 只在 Windows 上构建，Dmg 只在 macOS 上构建；Compose 会跳过非当前平台
+            // 的格式（所以同一份脚本两边都能用，`gradle packageDmg` 在 mac 上才是真的产出）
+            targetFormats(TargetFormat.Exe, TargetFormat.Dmg)
             // sqlite-jdbc 通过反射加载 java.sql.Driver，jlink 自动检测不到，必须显式声明；
             // jdk.httpserver 是视频预览的本地回环代理（com.sun.net.httpserver），
             // jdk.unsupported.desktop 是 JavaFX 与 Swing 互操作（JFXPanel 里的 jdk.swing.interop）——
@@ -270,6 +303,13 @@ compose.desktop {
             // 每用户安装（%LOCALAPPDATA%\Programs），无需管理员权限
             windows {
                 perUserInstall = true
+            }
+            // macOS：bundle id 反向域名 + 应用图标（.icns 由根目录 YunX-Desktop.ico
+            // 用 desktop/scripts 生成，见 docs/BUILD.md）。未签名，本机要「右键打开」。
+            macOS {
+                bundleID = "com.yunx.app.desktop"
+                iconFile.set(rootProject.file("YunX-Desktop.icns"))
+                // APP_VERSION 形如 1.3.1；jpackage 要求 mac 版本号全数字，compose 会处理
             }
             packageName = "YunX-Desktop"
             packageVersion = appVersion
