@@ -347,26 +347,38 @@ jobs:
           hdiutil detach "$vol"
           echo "DMG VERIFIED"
 
-      # 真的把它跑起來：掛載 dmg → open → 等 25 秒 → 看進程還在不在 + 截圖。
-      # 只證明「能啟動」，UI 內容看截圖。continue-on-error：啟動失敗不擋打包產物，
-      # 但日誌會寫清楚是「進程不在」還是「崩潰報告」。
-      - name: Launch the app (smoke test + screenshot)
+      # 真的把它跑起來並「錄」下 macOS 桌面：先拍 3 張純桌面，再開 app 每秒一張共 10 張，
+      # 之後每 3 秒一張共 4 張。存成 frames 上傳，本機再合成 GIF／MP4。
+      # continue-on-error：啟動失敗不擋打包產物，但日誌會寫清楚是「進程不在」還是「崩潰報告」。
+      - name: Desktop recording (launch app + frame series)
         if: steps.detect.outputs.has == 'true'
         continue-on-error: true
         run: |
           set -uo pipefail
+          mkdir -p /tmp/frames
           dmg=$(find . -path '*/build/compose/binaries/main/dmg/*.dmg' -print -quit)
           hdiutil attach "$dmg" -nobrowse -readonly > /tmp/attach2.txt
           vol=$(awk '/\/Volumes\// {print $NF}' /tmp/attach2.txt | head -1)
           app=$(find "$vol" -maxdepth 1 -name '*.app' -print -quit)
-          echo "launching $app"
+
+          echo "=== 1) 純桌面（未開 app）==="
+          for i in 1 2 3; do screencapture -x "/tmp/frames/01-desktop-$i.png"; sleep 1; done
+
+          echo "=== 2) 啟動 $app ==="
           open "$app" || echo "open failed"
-          sleep 25
+          for i in $(seq 1 10); do
+            sleep 1
+            screencapture -x "/tmp/frames/02-launch-$(printf %02d "$i").png"
+          done
+          for i in 1 2 3 4; do
+            sleep 3
+            screencapture -x "/tmp/frames/03-steady-$i.png"
+          done
+
           echo "=== 進程 ==="
           pgrep -fl "YunX" || echo "NO YunX PROCESS"
-          echo "=== 截图 ==="
-          screencapture -x /tmp/yunx-launch.png || echo "screencapture failed"
-          ls -la /tmp/yunx-launch.png || true
+          echo "=== 帧 ==="
+          ls -la /tmp/frames
           echo "=== 崩溃报告（如有）==="
           ls -lt ~/Library/Logs/DiagnosticReports 2>/dev/null | head -10 || echo "(none)"
           for f in $(ls -t ~/Library/Logs/DiagnosticReports/*.ips 2>/dev/null | head -1); do
@@ -374,15 +386,15 @@ jobs:
           done
           hdiutil detach "$vol" || true
 
-      - name: Upload launch screenshot
+      - name: Upload desktop frames
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: macos-launch-shot-${{ github.run_id }}
+          name: macos-desktop-frames-${{ github.run_id }}
           if-no-files-found: ignore
           retention-days: 7
           path: |
-            /tmp/yunx-launch.png
+            /tmp/frames/*.png
             ~/Library/Logs/DiagnosticReports/*.ips
 
       - name: Collect artifacts
