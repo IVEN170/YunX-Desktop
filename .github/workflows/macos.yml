@@ -327,8 +327,14 @@ jobs:
           ls -1 "$app/Contents/app" | head -40
 
           echo "=== mac 原生库自检 ==="
-          sqlite_jar=$(for j in "$app"/Contents/app/*.jar; do unzip -l "$j" 2>/dev/null | grep -q 'native/Mac/' && basename "$j"; done | head -1)
-          jfx_jar=$(for j in "$app"/Contents/app/javafx-*.jar; do unzip -l "$j" 2>/dev/null | grep -q '\.dylib$' && basename "$j"; done | head -1)
+          # 注意：不要写成 "... | grep -q xxx && basename ..." —— 没命中的 grep 返回 1，
+          # 配合 set -e + pipefail 会让整步无声退出。用 if 包起来，循环本身恒返回 0。
+          sqlite_jar=$(for j in "$app"/Contents/app/*.jar; do
+            if unzip -l "$j" 2>/dev/null | grep -q 'native/Mac/'; then basename "$j"; fi
+          done | head -1)
+          jfx_jar=$(for j in "$app"/Contents/app/javafx-*.jar; do
+            if unzip -l "$j" 2>/dev/null | grep -q '\.dylib$'; then basename "$j"; fi
+          done | head -1)
           echo "sqlite mac native 在: ${sqlite_jar:-<none>}"
           echo "javafx mac dylib 在: ${jfx_jar:-<none>}"
           [ -n "$sqlite_jar" ] || { echo "::error::sqlite mac native missing"; exit 1; }
